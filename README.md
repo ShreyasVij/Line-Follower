@@ -1,56 +1,115 @@
-# Line-Follower
 #include <Arduino.h>
-#include <DriveMaster.h>
 
-#define BASE_SPEED 100
+// Define an array to store the analog values from pins A0 to A3
+int analogValues[4];
 
-HBridge rightMotor(3, 4);
-HBridge leftMotor(5, 6);
+// Define the priority weights for each analog sensor
+int priorities[4] = {-2, -1, 1, 2}; // A0 -> -2, A1 -> -1, A2 -> 1, A3 -> 2
 
-class PID
+const int totalPriority = 3;
+const float setpoint = 0;
+
+// PID variables
+float kp = 1.0;  // Proportional gain
+float ki = 0.1;  // Integral gain
+float kd = 0.05; // Derivative gain
+float previousError = 0;
+float integral = 0;                    // Integral term
+unsigned long lastTime = 0;            // Time of last PID calculation
+const unsigned long pidInterval = 500; // Time interval in microseconds for 2kHz (500us)
+
+// Function to compute PID
+float computePID(float setpoint, float input)
 {
-private:
-    float kp;
-    float ki;
-    float kd;
-    float prev_error;
-    float integral;
+  // Calculate error
+  float error = setpoint - input;
 
-public:
-    PID(double kp_, double ki_, double kd_) : kp(kp_), ki(ki_), kd(kd_), prev_error(0), integral(0) {}
+  // Proportional term
+  float Pout = kp * error;
 
-   float calculate(float setpoint, float measured_value, float dt)
-    {
-        float error = setpoint - measured_value;
-        float P = kp * error;
-        integral += error * dt;
-        float I = ki * integral;
-        float derivative = (error - prev_error) / dt;
-        float D = kd * derivative;
-        return P + I + D;
-    }
-};
+  // Integral term (accumulated over time)
+  integral += error * (micros() - lastTime) / 1000000.0; // Convert time to seconds
+  float Iout = ki * integral;
 
-PID controller(1, 1, 1);
+  // Derivative term
+  float derivative = (error - previousError) * 1000000 / (micros() - lastTime);
+  float Dout = kd * derivative;
+
+  // Save previous error for next calculation
+  previousError = error;
+
+  // PID output
+  return Pout + Iout + Dout;
+}
+
+// Function to calculate the weighted position based on sensor priorities
+float calculatePosition()
+{
+  float weightedSum = 0;
+
+  // Calculate weighted sum of sensor values
+  for (int i = 0; i < 4; i++)
+  {
+    weightedSum += analogValues[i] * priorities[i];
+  }
+
+  // Calculate the position by dividing the weighted sum by the sum of priorities
+  float position = weightedSum / totalPriority;
+  return position;
+}
+
+void controlMotor(int speedPin, int directionPin, int speedValue)
+{
+  // Determine the direction based on the sign of speedValue
+  bool direction = (speedValue >= 0);
+
+  // If the speed is forward, map it directly (0 to 1024 -> 0 to 255)
+  int pwmValue;
+
+  if (direction)
+  {
+    pwmValue = map(speedValue, 0, 1024, 0, 255); // Forward direction: 0 to 255
+  }
+  else
+  {
+    pwmValue = map(abs(speedValue), 0, 1024, 255, 0); // Reverse direction: 255 to 0
+  }
+
+  digitalWrite(directionPin, direction);
+
+  // Set the motor speed (PWM)
+  analogWrite(speedPin, pwmValue);
+}
 
 void setup()
 {
-    rightMotor.begin();
-    leftMotor.begin();
+  // Initialize serial communication at a baud rate of 9600
+  Serial.begin(9600);
 }
 
 void loop()
 {
-    static uint32_t prev_time;
-    static float correction;
-    uint32_t current_time = millis();
-    uint32_t error = -2 * analogRead(A0) - analogRead(A1) + analogRead(A3) + 2 * analogRead(A4);
+  // Read analog values from pins A0 to A3 and store them in the array
+  for (int i = 0; i < 4; i++)
+  {
+    analogValues[i] = analogRead(A0 + i); // A0, A1, A2, A3 are consecutive pins
+  }
 
-   if (current_time - prev_time >= 10)
-    {
-        float correction = controller.calculate(0, error, current_time - prev_time);
-        prev_time = current_time;
-    }
-    leftMotor.write(BASE_SPEED + correction);
-    rightMotor.write(BASE_SPEED - correction);
+  // Calculate the position using the weighted sum of sensor values
+  float position = calculatePosition();
+
+  // Get the current time in microseconds
+  unsigned long currentTime = micros();
+
+  // Check if it's time to compute the PID
+  if (currentTime - lastTime >= pidInterval)
+  {
+    // Compute PID output
+    float pidOutput = computePID(setpoint, position);
+
+    // Output or use the pidOutput as needed (e.g., control a motor)
+
+    // Update lastTime for the next cycle
+    lastTime = currentTime;
+  }
 }
